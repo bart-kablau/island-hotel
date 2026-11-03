@@ -1,0 +1,84 @@
+rules_version = '2';
+
+// Island Hotel bookings. Who may do what comes from custom claims in the sign-in token
+// (staff, admin), set by the Apps Script from the users collection. The rules read no
+// other documents, so a booking of many room nights stays within the per-request limits.
+service cloud.firestore {
+  match /databases/{db}/documents {
+
+    function signedIn() { return request.auth != null && request.auth.token.email_verified == true; }
+    function staff() { return signedIn() && request.auth.token.staff == true; }
+    function admin() { return staff() && request.auth.token.admin == true; }
+    function me() { return request.auth.token.email; }
+    function isDate(d) { return d is string && d.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$'); }
+
+    match /rooms/{roomId} {
+      allow read: if staff();
+      allow write: if admin();
+    }
+
+    // Document id = e-mail address. Everyone signed in may read their own entry (to see "waiting
+    // for access"); an admin manages the others but never their own role or state.
+    match /users/{email} {
+      allow read: if staff() || (signedIn() && email == me());
+      allow create, update: if admin() && email != me()
+        && request.resource.data.role in ['Staff', 'Admin']
+        && request.resource.data.state in ['Invited', 'Active', 'Blocked'];
+      allow delete: if false;
+    }
+
+    match /meta/{doc} {
+      allow read: if staff();
+      allow write: if false;
+    }
+
+    match /bookings/{bookingId} {
+      function valid() {
+        let d = request.resource.data;
+        return d.guestName is string && d.guestName.size() > 0 && d.guestName.size() < 200
+          && isDate(d.checkIn) && isDate(d.checkOut) && d.checkOut > d.checkIn
+          && d.source in ['Direct', 'BookingCom', 'TourOperator', 'Other']
+          && d.lines is map && d.lines.size() > 0 && d.lines.size() <= 40
+          && d.version is int;
+      }
+      allow read: if staff();
+      allow create: if staff() && valid()
+        && request.resource.data.version == 1
+        && request.resource.data.createdBy == me() && request.resource.data.updatedBy == me()
+        && request.resource.data.createdAt == request.time && request.resource.data.updatedAt == request.time;
+      // Someone who saves with an old version number lost a race: refused, the app shows who changed it.
+      allow update: if staff() && valid()
+        && request.resource.data.version == resource.data.version + 1
+        && request.resource.data.updatedBy == me() && request.resource.data.updatedAt == request.time
+        && request.resource.data.createdBy == resource.data.createdBy
+        && request.resource.data.createdAt == resource.data.createdAt;
+      allow delete: if false;
+
+      match /history/{entryId} {
+        allow read: if staff();
+        allow create: if staff() && request.resource.data.by == me()
+          && request.resource.data.savedAt == request.time
+          && request.resource.data.bookingId == bookingId;
+        allow update, delete: if false;
+      }
+    }
+
+    // The Recent changes list reads all history entries at once (collection group query).
+    match /{path=**}/history/{entryId} {
+      allow read: if staff();
+    }
+
+    // One document per room per night: the lock against double bookings. It can be created,
+    // and removed when a booking gives the night back, but never overwritten.
+    match /nights/{nightId} {
+      allow read: if staff();
+      allow create: if staff()
+        && nightId == request.resource.data.roomId + '_' + request.resource.data.date
+        && isDate(request.resource.data.date)
+        && request.resource.data.bookingId is string
+        && request.resource.data.by == me();
+      allow update: if false;
+      allow delete: if staff();
+    }
+  }
+}
