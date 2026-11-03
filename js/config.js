@@ -2,7 +2,9 @@
 // Project island-hotel-jjb, owner kablau@gmail.com (created 03-11-2026).
 export const firebaseConfig = {
   apiKey: 'AIzaSyB95s-jG4zDySAuJ9uaqgygxBdQFR6mtto',
-  authDomain: 'island-hotel-jjb.firebaseapp.com',
+  // Same domain as the app: the sign-in helper is a copy in repo bart-kablau.github.io (/__/auth/), else
+  // Safari, iPhone and in-app browsers block firebaseapp.com storage and the Google sign-in hangs.
+  authDomain: 'bart-kablau.github.io',
   projectId: 'island-hotel-jjb',
   appId: '1:138359449876:web:4dab30aa7619730d003a01'
 };
