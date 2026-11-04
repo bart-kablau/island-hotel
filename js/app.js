@@ -25,7 +25,8 @@ const S = {
   user: null, claims: {}, tab: 'today', day: null, zoom: load('ih.zoom', null), today: L.todayIn(TIMEZONE),
   rooms: [], roomsById: new Map(), users: new Map(), bookings: new Map(), older: null,
   loaded: false, online: navigator.onLine, feed: null, filter: 'upcoming', q: '', backup: null,
-  sortBy: 'checkin', sortDir: null, repYear: null,
+  sortBy: 'checkin', sortDir: null,
+  rep: { year: null, rooms: '', source: '', withOptions: false, metric: 'nights', month: null, open: '' },
   pending: load('ih.pending', []), rejected: load('ih.rejected', []), unsubs: [], feedUnsub: null
 };
 function load(k, d) { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch { return d; } }
@@ -509,45 +510,123 @@ function drawChanges(main) {
 }
 
 // ---------------------------------------------------------------- reports
+// Overzichten v2 (ontwerp 04 en 06): filters, tiles, bar chart with a month to tap, table, coming up, not paid.
 
-function reportData() {
+const BAR = '#083935', BAR_DIM = '#5E8C86'; // 12.8:1 and 3.8:1 on white; yellow is no bar colour (1.7:1)
+const METRICS = { nights: ['Nights', r => r.nights, v => fmtN(v)], occupancy: ['Occupancy', r => r.occupancy, v => fmtPct(v)], revenue: ['GMD', r => r.revenue, v => fmtN(v)] };
+const fmtN = v => Math.round(v).toLocaleString('en-US');
+const fmtPct = v => Math.round(v * 100) + '%';
+const fmtBig = v => v >= 1e6 ? (v / 1e6).toFixed(2) + ' m' : fmtN(v);
+
+function repFilter() {
   const all = [...allBookings().values()];
   const years = [...new Set(all.map(b => b.checkIn.slice(0, 4)).filter(y => /^\d{4}$/.test(y)))].sort();
-  const year = S.repYear || (years.includes(S.today.slice(0, 4)) ? S.today.slice(0, 4) : years[years.length - 1] || S.today.slice(0, 4));
-  const roomCount = S.rooms.filter(r => r.active !== false).length;
-  return { years, year, roomCount, ...L.monthReport(all, roomCount, year) };
+  const year = S.rep.year || (years.includes(S.today.slice(0, 4)) ? S.today.slice(0, 4) : years[years.length - 1] || S.today.slice(0, 4));
+  return { all, years, f: { year, rooms: S.rep.rooms, source: S.rep.source, withOptions: S.rep.withOptions } };
+}
+
+function barChart(rows, metric, sel, width) {
+  const [, get, fmt] = METRICS[metric];
+  const H = 150, top = 18, bottom = 24, left = 2, plotH = H - top - bottom;
+  const slot = (width - left) / 12, bw = Math.min(24, slot * 0.62);
+  const max = Math.max(...rows.map(get), metric === 'occupancy' ? 0.05 : 1);
+  let g = `<line x1="${left}" x2="${width}" y1="${top}" y2="${top}" stroke="#E6E4DE"/><text x="${left}" y="${top - 6}" font-size="11" fill="#4F5B59">${esc(fmt(max))}</text>`;
+  rows.forEach((r, m) => {
+    const v = get(r), h = v > 0 ? Math.max(2, v / max * plotH) : 0, x = left + slot * m + (slot - bw) / 2, y = top + plotH - h, rad = Math.min(4, h, bw / 2);
+    const fill = sel === null || sel === m ? BAR : BAR_DIM;
+    if (h) g += `<path d="M${x},${top + plotH} V${y + rad} Q${x},${y} ${x + rad},${y} H${x + bw - rad} Q${x + bw},${y} ${x + bw},${y + rad} V${top + plotH} Z" fill="${fill}"/>`;
+    if (sel === m && h) g += `<text x="${x + bw / 2}" y="${y - 4}" font-size="11" font-weight="700" text-anchor="middle" fill="#15201F">${esc(fmt(v))}</text>`;
+    const lx = left + slot * m + slot / 2;
+    g += `<text x="${lx}" y="${H - 8}" font-size="12" text-anchor="middle" fill="${sel === m ? '#15201F' : '#4F5B59'}" font-weight="${sel === m ? 700 : 400}">${r.month[0]}</text>`;
+    if (sel === m) g += `<rect x="${lx - 7}" y="${H - 4}" width="14" height="3" rx="1.5" fill="#FDB602"/>`;
+    g += `<rect class="hit" data-month="${m}" x="${left + slot * m}" y="0" width="${slot}" height="${H}" fill="transparent"><title>${esc(r.month)}: ${esc(fmt(v))}</title></rect>`;
+  });
+  g += `<line x1="${left}" x2="${width}" y1="${top + plotH}" y2="${top + plotH}" stroke="#C9C6BD"/>`;
+  return `<svg class="chart" width="${width}" height="${H}" viewBox="0 0 ${width} ${H}" role="img" aria-label="${esc(METRICS[metric][0])} per month; the table below has the numbers">${g}</svg>`;
 }
 
 function drawReports(main) {
   if (!S.claims.admin) { main.innerHTML = ''; return; }
   if (!S.older) { loadOlder(true); main.innerHTML = '<div class="center muted">Loading all bookings…</div>'; return; }
-  const { years, year, roomCount, rows, total } = reportData();
-  const n = v => Math.round(v).toLocaleString('en-US');
-  const pct = v => Math.round(v * 100) + '%';
-  const tr = (r, tag = 'td') => `<tr><${tag} class="m">${esc(r.month === 'Total' ? 'Total' : r.month.slice(0, 3))}</${tag}><${tag}>${n(r.bookings)}</${tag}><${tag}>${n(r.rooms)}</${tag}><${tag}>${n(r.guests)}</${tag}><${tag}>${n(r.nights)}</${tag}><${tag}>${pct(r.occupancy)}</${tag}><${tag}>${n(r.revenue)}</${tag}></tr>`;
-  main.innerHTML = `<div class="rep">
-    <div class="chips" style="margin-bottom:10px">${years.map(y => `<button type="button" class="chip${y === year ? ' on' : ''}" data-year="${y}">${y}</button>`).join('')}</div>
-    <div class="card rep-w"><table class="rep-t">
+  const { all, years, f } = repFilter();
+  const rep = L.monthReport(all, S.rooms, f), { rows, total } = rep;
+  const R = S.rep;
+
+  // filters: one row, they scope everything below
+  const blds = [...new Set(S.rooms.filter(r => r.active !== false).map(r => r.building || 'Other'))];
+  const opt = (v, t) => `<option value="${esc(v)}"${R.rooms === v || R.source === v ? ' selected' : ''}>${esc(t)}</option>`;
+  const roomSel = `<select class="in" data-rf="rooms" aria-label="Rooms">${opt('', 'All rooms')}<optgroup label="Building">${blds.map(b => opt('b:' + b, b)).join('')}</optgroup>
+    <optgroup label="Room">${S.rooms.filter(r => r.active !== false).map(r => opt('r:' + r.id, r.name)).join('')}</optgroup></select>`;
+  const srcSel = `<select class="in" data-rf="source" aria-label="Source"><option value="">All sources</option>${L.SOURCES.map(k => `<option value="${k}"${R.source === k ? ' selected' : ''}>${esc(L.SOURCE_LABEL[k])}</option>`).join('')}</select>`;
+  const filters = `<div class="chips" style="margin-bottom:8px">${years.map(y => `<button type="button" class="chip${y === f.year ? ' on' : ''}" data-year="${y}">${y}</button>`).join('')}</div>
+    <div class="rep-f">${roomSel}${srcSel}<button type="button" class="chip${R.withOptions ? ' on' : ''}" data-act="repopt">+ options</button></div>`;
+
+  // data quality
+  const zeroPct = total.nights ? total.zeroNights / total.nights : 0;
+  const zero = total.zeroNights ? `<div class="banner yel"><div><b>${fmtN(total.zeroNights)} room nights have no rate</b> (${fmtPct(zeroPct)} of nights in ${f.year}, ${rep.zeroIds.length} bookings): GMD figures are too low.</div>
+    <button type="button" data-act="repzero">${R.open === 'zero' ? 'Hide' : 'Show'}</button></div>
+    ${R.open === 'zero' ? rep.zeroIds.map(id => allBookings().get(id)).filter(Boolean).sort((a, b) => a.checkIn.localeCompare(b.checkIn)).map(bookingCard).join('') : ''}` : '';
+
+  const tile = (k, v, s) => `<div class="kpi"><span>${k}</span><b>${v}</b>${s ? `<small>${s}</small>` : ''}</div>`;
+  const tiles = `<div class="kpis">${tile('Occupancy', fmtPct(total.occupancy), fmtN(total.nights) + ' room nights')}${tile('Revenue', 'GMD ' + fmtBig(total.revenue), total.eur ? '+ EUR ' + fmtN(total.eur) + ' Booking.com' : '')}
+    ${tile('Avg rate per night', 'GMD ' + fmtN(total.adr), 'nights with a rate')}${tile('Per room per night', 'GMD ' + fmtN(total.revpar), rep.roomCount + ' rooms in use')}</div>`;
+
+  // chart + month detail
+  const width = Math.max(260, Math.min(main.clientWidth - 24, 720) - 30);
+  const mchip = k => `<button type="button" class="chip${R.metric === k ? ' on' : ''}" data-metric="${k}">${METRICS[k][0]}</button>`;
+  let detail = '';
+  if (R.month !== null) {
+    const r = rows[R.month], list = L.monthBookings(all, S.rooms, f, R.month);
+    detail = `<div class="card"><div class="t"><span>${esc(r.month)} ${f.year}</span><button type="button" class="link" data-act="repclose">Close</button></div>
+      <div class="s">${fmtN(r.nights)} nights · ${fmtPct(r.occupancy)} · GMD ${fmtN(r.revenue)} · avg GMD ${fmtN(r.adr)} per night · ${r.bookings} check-ins${r.zeroNights ? ' · ' + r.zeroNights + ' nights without a rate' : ''}</div></div>
+      ${list.slice(0, 80).map(bookingCard).join('')}${list.length > 80 ? `<div class="s muted">and ${list.length - 80} more</div>` : ''}`;
+  }
+  const chart = `<div class="card"><div class="chips" style="margin-bottom:8px">${mchip('nights')}${mchip('occupancy')}${mchip('revenue')}</div>
+    ${barChart(rows, R.metric, R.month, width)}<div class="s muted">Tap a month for the details and its bookings.</div></div>${detail}`;
+
+  // table
+  const tr = (r, tag = 'td') => `<tr><${tag} class="m">${esc(r.month === 'Total' ? 'Total' : r.month.slice(0, 3))}</${tag}><${tag}>${fmtN(r.bookings)}</${tag}><${tag}>${fmtN(r.rooms)}</${tag}><${tag}>${fmtN(r.guests)}</${tag}><${tag}>${fmtN(r.nights)}</${tag}><${tag}>${fmtPct(r.occupancy)}</${tag}><${tag}>${fmtN(r.revenue)}</${tag}></tr>`;
+  const table = `<div class="card rep-w"><table class="rep-t">
       <thead><tr><th class="m"></th><th>Book.</th><th>Rooms</th><th>Guests</th><th>Nights</th><th>Occ.</th><th>GMD</th></tr></thead>
-      <tbody>${rows.map(r => tr(r)).join('')}</tbody>
-      <tfoot>${tr(total, 'th')}</tfoot></table></div>
-    <div class="s muted" style="margin:8px 2px">Booking.com ${year}: EUR ${n(total.eur)} (not in GMD).<br>
-      Only confirmed rooms count. Bookings, rooms and guests count in the month of check-in; nights, occupancy and GMD per night.
-      Occupancy = nights / (${roomCount} rooms in use x days).</div>
-    <button class="btn outline" type="button" data-act="repxlsx">Download Excel (${year})</button>
+      <tbody>${rows.map(r => tr(r)).join('')}</tbody><tfoot>${tr(total, 'th')}</tfoot></table></div>
+    <div class="s muted" style="margin:8px 2px">${R.withOptions ? 'Confirmed rooms, options and requests' : 'Only confirmed rooms'} count. Bookings, rooms and guests in the month of check-in; nights, occupancy and GMD per night.
+      Booking.com amounts in EUR are not in GMD.</div>
+    <button class="btn outline" type="button" data-act="repxlsx">Download Excel (${f.year})</button>`;
+
+  // coming up: year and status do not count here
+  const fw = [30, 60, 90].map(d => L.forward(all, S.rooms, f, S.today, d));
+  const coming = fw.map(x => `<div class="card fw"><div class="t"><span>Next ${x.days} days</span><span>${fmtPct(x.confPct)}${x.other ? ` <small class="muted">+ ${fmtPct(x.otherPct)} options</small>` : ''}</span></div>
+    <div class="seg-bar" role="img" aria-label="${fmtPct(x.confPct)} confirmed, ${fmtPct(x.otherPct)} options and requests"><i style="width:${Math.min(100, x.confPct * 100)}%"></i><i class="o" style="width:${Math.min(100, x.otherPct * 100)}%"></i></div>
+    <div class="s">${fmtN(x.confirmed)} confirmed room nights${x.other ? ', ' + fmtN(x.other) + ' option or request' : ''}</div></div>`).join('');
+
+  // not paid yet
+  const out = L.outstanding(all, S.rooms, f, S.today);
+  const outRow = i => `<button type="button" class="card" data-open="${esc(i.b.id)}"><div class="t"><span>${esc(i.b.guestName)}</span><span class="money">GMD ${fmtN(i.amount)}</span></div>
+    <div class="s">${L.fmtRange(i.b.checkIn, i.b.checkOut)} ${i.b.checkOut.slice(0, 4)} · ${i.rooms} room${i.rooms > 1 ? 's' : ''}${i.deposit ? ' · deposit paid' : ''}${i.amount ? '' : ' · no rate'}</div></button>`;
+  const outList = out.items.slice(0, R.open === 'out' ? 500 : 5).map(outRow).join('');
+
+  main.innerHTML = `<div class="rep">${filters}${zero}${tiles}${chart}
+    <div class="bh"><h3>Per month</h3></div>${table}
+    <div class="bh"><h3>Coming up</h3><span class="muted" style="font-weight:400;font-size:13px">from today, any year</span></div>${coming}
+    <div class="bh"><h3>Not paid yet</h3><span class="muted" style="font-weight:400;font-size:13px">stay is over</span></div>
+    <div class="card"><b>${fmtN(out.rooms)} rooms · GMD ${fmtN(out.amount)}</b><div class="s">Oldest first. Paid already? Open the booking and mark it paid.</div></div>
+    ${outList}${out.items.length > 5 ? `<button class="link" type="button" data-act="repout">${R.open === 'out' ? 'Show less' : 'Show all ' + out.items.length}</button>` : ''}
   </div>`;
 }
 
 async function downloadReport() {
   const XLSX = await import(XLSX_URL);
-  const { year, rows, total } = reportData();
+  const { all, f } = repFilter();
+  const { rows, total } = L.monthReport(all, S.rooms, f);
   const out = [...rows, total].map(r => ({
     Month: r.month, Bookings: r.bookings, Rooms: r.rooms, Guests: r.guests, Nights: r.nights,
-    'Occupancy %': Math.round(r.occupancy * 1000) / 10, 'Revenue GMD': r.revenue, 'Booking.com EUR': r.eur
+    'Occupancy %': Math.round(r.occupancy * 1000) / 10, 'Revenue GMD': r.revenue, 'Avg rate GMD': Math.round(r.adr),
+    'Per room per night GMD': Math.round(r.revpar), 'Nights without rate': r.zeroNights, 'Booking.com EUR': r.eur
   }));
+  const label = [f.rooms ? f.rooms.slice(2) : '', f.source ? L.SOURCE_LABEL[f.source] : '', f.withOptions ? 'with options' : ''].filter(Boolean).join(', ');
   const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(out), 'Report ' + year);
-  XLSX.writeFile(wb, 'Island Hotel report ' + year + '.xlsx');
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(out), 'Report ' + f.year);
+  XLSX.writeFile(wb, 'Island Hotel report ' + f.year + (label ? ' (' + label + ')' : '') + '.xlsx');
 }
 
 // ---------------------------------------------------------------- admin
@@ -904,6 +983,8 @@ function drawAccount() {
 // ---------------------------------------------------------------- events
 
 document.addEventListener('click', e => {
+  const hit = e.target.closest('rect.hit');
+  if (hit) { const m = +hit.dataset.month; S.rep.month = S.rep.month === m ? null : m; return draw(); }
   const t = e.target.closest('button, td.cell');
   if (!t) return;
   if (t.dataset.tab) {
@@ -921,7 +1002,8 @@ document.addEventListener('click', e => {
     else { S.sortBy = t.dataset.sort; S.sortDir = 'asc'; }
     return draw();
   }
-  if (t.dataset.year) { S.repYear = t.dataset.year; return draw(); }
+  if (t.dataset.year) { S.rep.year = t.dataset.year; S.rep.month = null; return draw(); }
+  if (t.dataset.metric) { S.rep.metric = t.dataset.metric; return draw(); }
   if (t.dataset.fix !== undefined) {
     const r = S.rejected[+t.dataset.fix];
     S.rejected.splice(+t.dataset.fix, 1); keep(); draw();
@@ -984,7 +1066,11 @@ document.addEventListener('click', e => {
     adduser: addUser,
     addroom: addRoom,
     excel: () => downloadExcel().catch(err => toast('Excel failed: ' + err.message)),
-    repxlsx: () => downloadReport().catch(err => toast('Excel failed: ' + err.message))
+    repxlsx: () => downloadReport().catch(err => toast('Excel failed: ' + err.message)),
+    repopt: () => { S.rep.withOptions = !S.rep.withOptions; draw(); },
+    repzero: () => { S.rep.open = S.rep.open === 'zero' ? '' : 'zero'; draw(); },
+    repout: () => { S.rep.open = S.rep.open === 'out' ? '' : 'out'; draw(); },
+    repclose: () => { S.rep.month = null; draw(); }
   }[act] || (() => {}))();
 });
 
@@ -1000,6 +1086,7 @@ document.addEventListener('input', e => {
 
 document.addEventListener('change', e => {
   const t = e.target;
+  if (t.dataset.rf) { S.rep[t.dataset.rf] = t.value; S.rep.month = null; return draw(); }
   if (SHEET?.kind === 'form' && t.dataset.date) {
     SHEET.b[t.dataset.date] = t.value;
     if (t.dataset.date === 'checkIn' && L.isDate(t.value) && !(SHEET.b.checkOut > t.value)) { SHEET.b.checkOut = L.addDays(t.value, 1); $('#f-out').value = SHEET.b.checkOut; }
@@ -1027,7 +1114,7 @@ document.addEventListener('keydown', e => { if (e.key === 'Escape' && SHEET) clo
 $('#sheet').addEventListener('click', e => { if (e.target.id === 'sheet') closeSheet(); });
 
 let resizeT = 0;
-window.addEventListener('resize', () => { clearTimeout(resizeT); resizeT = setTimeout(() => { if (S.tab === 'planning' || S.tab === 'today') draw(); }, 150); });
+window.addEventListener('resize', () => { clearTimeout(resizeT); resizeT = setTimeout(() => { if (S.tab === 'planning' || S.tab === 'today' || S.tab === 'reports') draw(); }, 150); });
 // A new day at midnight in Gambia.
 setInterval(() => { const t = L.todayIn(TIMEZONE); if (t !== S.today) { S.today = t; render(); } }, 60000);
 

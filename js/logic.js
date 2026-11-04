@@ -315,19 +315,39 @@ export function bookingGuests(lines) {
   return g.reduce((s, x) => s + x, 0);
 }
 
+// Reports filter (ontwerp 04, overzichten v2): { year, rooms, source, withOptions }.
+// rooms: '' = all, 'b:<building>' or 'r:<roomId>'. It works on room lines: only lines that pass count.
+
+/** Active rooms inside the rooms filter: the base for occupancy and RevPAR. */
+export function roomsInUse(rooms, f = {}) {
+  return rooms.filter(r => r.active !== false && roomMatch(r.id, r.building, f.rooms));
+}
+function roomMatch(roomId, building, sel) {
+  if (!sel) return true;
+  if (sel.startsWith('b:')) return building === sel.slice(2);
+  return roomId === sel.slice(2);
+}
+/** (booking, line) => true when the line counts. statuses: which line statuses count. */
+export function lineFilter(rooms, f = {}, statuses = f.withOptions ? ACTIVE : ['Confirmed']) {
+  const bld = new Map(rooms.map(r => [r.id, r.building]));
+  return (b, l) => !!l.roomId && statuses.includes(l.status) && (!f.source || b.source === f.source) &&
+    roomMatch(l.roomId, bld.get(l.roomId), f.rooms);
+}
+
 /**
- * Figures per month of one year, only rooms with status Confirmed. Bookings, rooms, guests and the
- * Booking.com amount count in the month of check-in; nights, occupancy and revenue per night, so a stay
- * over the month end is split fairly. roomCount = rooms in use, for the occupancy.
+ * Figures per month of one year. Bookings, rooms, guests and the Booking.com amount count in the month of
+ * check-in; nights, occupancy and revenue per night, so a stay over the month end is split fairly.
+ * ADR = revenue / nights with a rate; RevPAR = revenue / (rooms in use x days); zeroNights = nights without a rate.
  */
-export function monthReport(bookings, roomCount, year) {
-  const y = String(year);
-  const rows = MONTH_NAMES.map((name, m) => ({
-    month: name, days: new Date(Date.UTC(+y, m + 1, 0)).getUTCDate(),
-    bookings: 0, rooms: 0, guests: 0, nights: 0, revenue: 0, eur: 0, occupancy: 0
-  }));
+export function monthReport(bookings, rooms, f = {}) {
+  const y = String(f.year);
+  const ok = lineFilter(rooms, f);
+  const roomCount = roomsInUse(rooms, f).length;
+  const blank = (month, days) => ({ month, days, bookings: 0, rooms: 0, guests: 0, nights: 0, revenue: 0, eur: 0, ratedNights: 0, zeroNights: 0 });
+  const rows = MONTH_NAMES.map((name, m) => blank(name, new Date(Date.UTC(+y, m + 1, 0)).getUTCDate()));
+  const zeroIds = new Set();
   for (const b of bookings) {
-    const lines = lineList(b).filter(l => l.status === 'Confirmed' && l.roomId);
+    const lines = lineList(b).filter(l => ok(b, l));
     if (!lines.length || !isDate(b.checkIn) || !isDate(b.checkOut)) continue;
     if (b.checkIn.slice(0, 4) === y) {
       const r = rows[+b.checkIn.slice(5, 7) - 1];
@@ -336,17 +356,66 @@ export function monthReport(bookings, roomCount, year) {
       r.eur += Number(b.bookingComAmountEur) || 0;
     }
     const perNight = lines.reduce((s, l) => s + (Number(l.rateGmd) || 0), 0);
+    const zero = lines.filter(l => !(Number(l.rateGmd) > 0)).length;
     for (const d of stayDates(b.checkIn, b.checkOut)) {
       if (d.slice(0, 4) !== y) continue;
       const r = rows[+d.slice(5, 7) - 1];
       r.nights += lines.length; r.revenue += perNight;
+      r.ratedNights += lines.length - zero; r.zeroNights += zero;
+      if (zero) zeroIds.add(b.id);
     }
   }
-  const total = { month: 'Total', days: rows.reduce((s, r) => s + r.days, 0), bookings: 0, rooms: 0, guests: 0, nights: 0, revenue: 0, eur: 0 };
-  for (const r of rows) {
+  const total = blank('Total', rows.reduce((s, r) => s + r.days, 0));
+  const finish = r => {
     r.occupancy = roomCount ? r.nights / (roomCount * r.days) : 0;
-    for (const k of ['bookings', 'rooms', 'guests', 'nights', 'revenue', 'eur']) total[k] += r[k];
+    r.adr = r.ratedNights ? r.revenue / r.ratedNights : 0;
+    r.revpar = roomCount ? r.revenue / (roomCount * r.days) : 0;
+  };
+  for (const r of rows) {
+    finish(r);
+    for (const k of ['bookings', 'rooms', 'guests', 'nights', 'revenue', 'eur', 'ratedNights', 'zeroNights']) total[k] += r[k];
   }
-  total.occupancy = roomCount ? total.nights / (roomCount * total.days) : 0;
-  return { rows, total };
+  finish(total);
+  return { rows, total, roomCount, zeroIds: [...zeroIds] };
+}
+
+/** Bookings with at least one counted night in month m (0-11) of f.year, by check-in. */
+export function monthBookings(bookings, rooms, f, m) {
+  const ok = lineFilter(rooms, f);
+  const from = f.year + '-' + String(m + 1).padStart(2, '0') + '-01', to = addDays(from, 31).slice(0, 8) + '01';
+  return bookings.filter(b => isDate(b.checkIn) && isDate(b.checkOut) && b.checkIn < to && b.checkOut > from &&
+    lineList(b).some(l => ok(b, l))).sort((a, b) => a.checkIn.localeCompare(b.checkIn));
+}
+
+/**
+ * Not paid yet while the stay is over: confirmed lines, check-out before today, paid not Yes.
+ * Year and status are ignored; rooms and source count. Oldest first.
+ */
+export function outstanding(bookings, rooms, f, today) {
+  const ok = lineFilter(rooms, { ...f, withOptions: false });
+  const items = [];
+  for (const b of bookings) {
+    if (!isDate(b.checkOut) || b.checkOut >= today) continue;
+    const lines = lineList(b).filter(l => ok(b, l) && l.paid !== 'Yes');
+    if (!lines.length) continue;
+    items.push({ b, rooms: lines.length, amount: lines.reduce((s, l) => s + lineTotal(b, l), 0), deposit: lines.some(l => l.paid === 'Deposit') });
+  }
+  items.sort((x, y) => x.b.checkOut.localeCompare(y.b.checkOut) || x.b.guestName.localeCompare(y.b.guestName));
+  return { items, rooms: items.reduce((s, i) => s + i.rooms, 0), amount: items.reduce((s, i) => s + i.amount, 0) };
+}
+
+/** The next `days` nights from today: confirmed and option/request nights, as share of rooms in use x days. */
+export function forward(bookings, rooms, f, today, days) {
+  const ok = lineFilter(rooms, f, ACTIVE);
+  const end = addDays(today, days);
+  let confirmed = 0, other = 0;
+  for (const b of bookings) {
+    if (!isDate(b.checkIn) || !isDate(b.checkOut) || b.checkOut <= today || b.checkIn >= end) continue;
+    const lines = lineList(b).filter(l => ok(b, l));
+    if (!lines.length) continue;
+    const n = stayDates(b.checkIn < today ? today : b.checkIn, b.checkOut < end ? b.checkOut : end).length;
+    for (const l of lines) l.status === 'Confirmed' ? confirmed += n : other += n;
+  }
+  const cap = roomsInUse(rooms, f).length * days;
+  return { days, confirmed, other, confPct: cap ? confirmed / cap : 0, otherPct: cap ? other / cap : 0 };
 }
