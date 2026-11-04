@@ -183,6 +183,7 @@ table.plan { border-collapse: separate; border-spacing: 0; table-layout: fixed; 
 .adm .ln { display: flex; gap: 8px; align-items: center; }
 .adm .ln > span:first-child { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
 .adm select.in { width: auto; height: 40px; }
+@media (max-width: 520px) { .adm .ln.room { flex-wrap: wrap; } .adm .ln.room > span:first-child { flex-basis: 100%; } .adm .ln.room .btn { margin-left: auto; } }
 
 @media (max-width: 599px) {
   .bar { font-size: 12px; padding: 0 4px; margin: 0 1px; width: calc(100% - 2px); }

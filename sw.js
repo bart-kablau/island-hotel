@@ -1,6 +1,6 @@
 // Keeps the app itself available without internet. The bookings are not cached here:
 // Firestore keeps its own offline copy in the browser.
-const VERSION = 'ih-5';
+const VERSION = 'ih-6';
 const SHELL = ['./', 'index.html', 'styles.css', 'manifest.webmanifest', 'img/logo-192.png', 'img/logo-512.png',
   'js/app.js', 'js/logic.js', 'js/ops.js', 'js/config.js'];
 const SDK = 'https://www.gstatic.com/firebasejs/11.10.0/';

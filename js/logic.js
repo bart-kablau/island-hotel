@@ -73,6 +73,26 @@ export function buildingOf(name) {
   return /^(JANEYA|KUNTAIR|JANJANBUREH)$/.test(n) ? 'Deluxe' : 'Other';
 }
 
+/** Standard rates per building in GMD (Fun, 04-11-2026). Set on import; the admin changes them per room. */
+export const DEFAULT_RATES = { Fuladu: [3000, 3500], Jokadu: [3000, 3500], Badibu: [3000, 3500], Deluxe: [4000, 4500] };
+export function ratesFor(building) {
+  const [single, double] = DEFAULT_RATES[building] || [0, 0];
+  return { defaultRateSingleGmd: single, defaultRateDoubleGmd: double };
+}
+
+/** Standard rate for a room: single for 1 guest, double for 2 or more. Old rooms only have defaultRateGmd. */
+export function defaultRate(room, guests) {
+  const single = Number(room?.defaultRateSingleGmd) || 0;
+  const double = Number(room?.defaultRateDoubleGmd) || Number(room?.defaultRateGmd) || 0;
+  return Number(guests) === 1 ? single || double : double || single;
+}
+
+/** New rate after the guest count changes: follows the standard rate, unless someone typed their own. */
+export function rateAfterGuests(room, rate, oldGuests, newGuests) {
+  const r = Number(rate) || 0;
+  return !r || r === defaultRate(room, oldGuests) ? defaultRate(room, newGuests) : r;
+}
+
 const ID_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // no 0/O, 1/I
 /** Works offline: date of today plus three random characters, e.g. B261103-K7F. */
 export function newBookingId(today, rand = Math.random) {

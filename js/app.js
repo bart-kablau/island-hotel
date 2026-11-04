@@ -643,8 +643,9 @@ function drawAdmin(main) {
   let building = null, rooms = '';
   for (const r of S.rooms) {
     if (r.building !== building) { building = r.building; rooms += `<div class="dayhead">${esc(building || 'Other')}</div>`; }
-    rooms += `<div class="card ln${r.active === false ? ' off' : ''}"><span>${esc(r.name)}</span>
-      <input class="in" style="width:110px" inputmode="numeric" data-rrate="${esc(r.id)}" value="${esc(r.defaultRateGmd || '')}" aria-label="Default rate for ${esc(r.name)}" placeholder="Rate">
+    rooms += `<div class="card ln room${r.active === false ? ' off' : ''}"><span>${esc(r.name)}</span>
+      <input class="in" style="width:84px" inputmode="numeric" data-rrate="${esc(r.id)}" data-rkind="Single" value="${esc(L.defaultRate(r, 1) || '')}" aria-label="Single rate for ${esc(r.name)}" placeholder="Single" title="Single (1 guest)">
+      <input class="in" style="width:84px" inputmode="numeric" data-rrate="${esc(r.id)}" data-rkind="Double" value="${esc(L.defaultRate(r, 2) || '')}" aria-label="Double rate for ${esc(r.name)}" placeholder="Double" title="Double (2 or more guests)">
       <button class="btn" type="button" data-ractive="${esc(r.id)}">${r.active === false ? 'Use again' : 'Not in use'}</button></div>`;
   }
   const bk = S.backup;
@@ -657,6 +658,7 @@ function drawAdmin(main) {
       <button class="btn primary" type="button" data-act="adduser">Add person</button></div>
       <div class="s muted" style="margin-top:6px">They can sign in within 10 minutes.</div></div>
     <div class="bh"><h3>Rooms</h3></div>
+    <div class="s muted" style="margin:-4px 0 8px">Standard rate per night in GMD: first single (1 guest), then double (2 or more).</div>
     ${rooms}
     <div class="card"><div class="row"><input class="in" id="nr-name" placeholder="Room name, e.g. FULADU 7" aria-label="New room name">
       <input class="in" id="nr-bld" placeholder="Building" aria-label="Building"></div>
@@ -684,7 +686,7 @@ function addRoom() {
   if (!name) return toast('Enter a room name.');
   const id = L.roomIdOf(name);
   if (S.roomsById.has(id)) return toast('That room exists already.');
-  F.setDoc(F.doc(db, 'rooms', id), { name, building: building || 'Other', active: true, sortOrder: S.rooms.length, defaultRateGmd: 0, isApartment: /APARTMENT/i.test(name) })
+  F.setDoc(F.doc(db, 'rooms', id), { name, building: building || 'Other', active: true, sortOrder: S.rooms.length, ...L.ratesFor(building || 'Other'), isApartment: /APARTMENT/i.test(name) })
     .then(() => toast('Room added')).catch(e => toast('Not saved: ' + e.code));
 }
 
@@ -743,9 +745,6 @@ async function importSheet(file) {
   const names = [];
   if (wb.Sheets.Rooms) XLSX.utils.sheet_to_json(wb.Sheets.Rooms, { header: 1 }).forEach(r => { if (String(r[0] || '').trim()) names.push(String(r[0]).trim()); });
   rows.forEach(r => { if (r.room.trim() && !names.some(n => L.roomIdOf(n) === L.roomIdOf(r.room))) names.push(r.room.trim()); });
-  const rates = {};
-  bookings.forEach(b => L.lineList(b).forEach(l => { if (l.rateGmd > 0) (rates[l.roomId] = rates[l.roomId] || []).push(l.rateGmd); }));
-  const median = a => a && a.length ? a.slice().sort((x, y) => x - y)[Math.floor(a.length / 2)] : 0;
   const seen = new Set();
   let order = 0;
   for (const n of names) {
@@ -754,7 +753,7 @@ async function importSheet(file) {
     seen.add(id);
     await F.setDoc(F.doc(db, 'rooms', id), {
       name: n.replace(/([A-Za-z])(\d)/, '$1 $2').toUpperCase(), building: L.buildingOf(n),
-      isApartment: /APARTMENT/i.test(n), defaultRateGmd: median(rates[id]), active: true, sortOrder: order++
+      isApartment: /APARTMENT/i.test(n), ...L.ratesFor(L.buildingOf(n)), active: true, sortOrder: order++
     });
   }
 
@@ -877,7 +876,8 @@ function toggleRoom(roomId) {
     lines[mine[0]] = { ...mine[1], status: f.status };
   } else {
     const r = S.roomsById.get(roomId);
-    lines[nextLineId(f)] = { roomId, guests: r?.isApartment ? 4 : 2, rateGmd: r?.defaultRateGmd || 0, status: f.status, paid: f.paid, invoiceNo: '', notes: '', order: Object.keys(lines).length };
+    const guests = r?.isApartment ? 4 : 2;
+    lines[nextLineId(f)] = { roomId, guests, rateGmd: L.defaultRate(r, guests), status: f.status, paid: f.paid, invoiceNo: '', notes: '', order: Object.keys(lines).length };
   }
   drawFormParts();
 }
@@ -1079,8 +1079,13 @@ document.addEventListener('input', e => {
   if (SHEET?.kind !== 'form') return;
   const b = SHEET.b;
   if (t.dataset.fld) b[t.dataset.fld] = t.value;
-  if (t.dataset.lg) { b.lines[t.dataset.lg].guests = t.value; }
-  if (t.dataset.lr) { b.lines[t.dataset.lr].rateGmd = t.value; const tot = $('#f-total'); if (tot) tot.textContent = L.fmtGmd(L.bookingTotal(b)); }
+  if (t.dataset.lg) {
+    const l = b.lines[t.dataset.lg], rate = L.rateAfterGuests(S.roomsById.get(l.roomId), l.rateGmd, l.guests, t.value);
+    l.guests = t.value;
+    if (rate !== (Number(l.rateGmd) || 0)) { l.rateGmd = rate; const inp = document.querySelector(`[data-lr="${CSS.escape(t.dataset.lg)}"]`); if (inp) inp.value = rate || ''; }
+  }
+  if (t.dataset.lr) b.lines[t.dataset.lr].rateGmd = t.value;
+  if (t.dataset.lg || t.dataset.lr) { const tot = $('#f-total'); if (tot) tot.textContent = L.fmtGmd(L.bookingTotal(b)); }
 });
 
 document.addEventListener('change', e => {
@@ -1097,7 +1102,7 @@ document.addEventListener('change', e => {
   }
   if (t.dataset.urole) return setUser(t.dataset.urole, 'role', t.value);
   if (t.dataset.ustate) return setUser(t.dataset.ustate, 'state', t.value);
-  if (t.dataset.rrate) return F.setDoc(F.doc(db, 'rooms', t.dataset.rrate), { defaultRateGmd: Number(t.value) || 0 }, { merge: true }).then(() => toast('Rate saved'));
+  if (t.dataset.rrate) return F.setDoc(F.doc(db, 'rooms', t.dataset.rrate), { ['defaultRate' + t.dataset.rkind + 'Gmd']: Number(t.value) || 0 }, { merge: true }).then(() => toast(t.dataset.rkind + ' rate saved'));
   if (t.id === 'imp' && t.files[0]) {
     if (!confirm('Import all bookings from this file? Do this only once.')) return;
     importSheet(t.files[0]).catch(err => importOut('Import failed: ' + esc(err.message)));
