@@ -752,9 +752,8 @@ async function importSheet(file) {
     const id = L.roomIdOf(n);
     if (seen.has(id) || S.roomsById.has(id) || L.GROUP_NAMES.has(id)) continue;
     seen.add(id);
-    const bld = n.match(/^(FULADU|JOKADU|BADIBU)/i);
     await F.setDoc(F.doc(db, 'rooms', id), {
-      name: n.replace(/([A-Za-z])(\d)/, '$1 $2').toUpperCase(), building: bld ? bld[1][0] + bld[1].slice(1).toLowerCase() : 'Other',
+      name: n.replace(/([A-Za-z])(\d)/, '$1 $2').toUpperCase(), building: L.buildingOf(n),
       isApartment: /APARTMENT/i.test(n), defaultRateGmd: median(rates[id]), active: true, sortOrder: order++
     });
   }

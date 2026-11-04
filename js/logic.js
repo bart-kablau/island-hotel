@@ -63,7 +63,15 @@ export function roomIdOf(name) {
 }
 
 /** Names in the old room list that are a building, not a room (Fun, 04-11-2026). Skipped on import. */
-export const GROUP_NAMES = new Set(['FULADU-APARTMENT', 'JOKADU-APARTMENT', 'BADIBU-APARTMENT']);
+export const GROUP_NAMES = new Set(['FULADU-APARTMENT', 'JOKADU-APARTMENT', 'BADIBU-APARTMENT', 'DELUXE-APARTMENT']);
+
+/** Building of a room from its sheet name. Deluxe = the three VIP rooms (Fun, 04-11-2026). */
+export function buildingOf(name) {
+  const n = String(name || '').trim().toUpperCase();
+  const b = n.match(/^(FULADU|JOKADU|BADIBU)/);
+  if (b) return b[1][0] + b[1].slice(1).toLowerCase();
+  return /^(JANEYA|KUNTAIR|JANJANBUREH)$/.test(n) ? 'Deluxe' : 'Other';
+}
 
 const ID_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // no 0/O, 1/I
 /** Works offline: date of today plus three random characters, e.g. B261103-K7F. */
