@@ -193,3 +193,17 @@ table.plan { border-collapse: separate; border-spacing: 0; table-layout: fixed; 
   .panel { box-shadow: -8px 0 30px rgba(0, 0, 0, .15); }
   .plan td.room { font-size: 14px; }
 }
+
+/* bookings sort (04-11-2026) */
+.chips.sort { align-items: center; }
+.chips.sort .muted { font-size: 14px; margin-right: 2px; }
+/* reports (04-11-2026) */
+.rep { max-width: 720px; }
+.rep-w { padding: 0; overflow-x: auto; max-width: 100%; }
+.rep-t { width: 100%; border-collapse: collapse; font-size: 13px; font-variant-numeric: tabular-nums; }
+.rep-t th, .rep-t td { padding: 9px 4px; text-align: right; border-bottom: 1px solid var(--line2); white-space: nowrap; }
+.rep-t th:first-child, .rep-t td:first-child { padding-left: 10px; }
+.rep-t th:last-child, .rep-t td:last-child { padding-right: 10px; }
+.rep-t .m { text-align: left; }
+.rep-t thead th { font-size: 12px; color: var(--muted); font-weight: 600; }
+.rep-t tfoot th { border-bottom: 0; border-top: 2px solid var(--teal); }

@@ -62,6 +62,9 @@ export function roomIdOf(name) {
     .split(/[^A-Z0-9]+/).filter(Boolean).join('-');
 }
 
+/** Names in the old room list that are a building, not a room (Fun, 04-11-2026). Skipped on import. */
+export const GROUP_NAMES = new Set(['FULADU-APARTMENT', 'JOKADU-APARTMENT', 'BADIBU-APARTMENT']);
+
 const ID_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // no 0/O, 1/I
 /** Works offline: date of today plus three random characters, e.g. B261103-K7F. */
 export function newBookingId(today, rand = Math.random) {
@@ -240,6 +243,7 @@ export function groupSheetRows(rows, today) {
   const groups = new Map();
   for (const r of rows) {
     if (!String(r.guest || '').trim() || !isDate(r.checkIn) || !isDate(r.checkOut) || r.checkOut <= r.checkIn) continue;
+    if (GROUP_NAMES.has(roomIdOf(r.room))) continue;
     const key = r.group ? 'G|' + r.group : 'L|' + r.guest.trim().toLowerCase() + '|' + r.checkIn + '|' + r.checkOut;
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push(r);
@@ -278,4 +282,71 @@ export function groupSheetRows(rows, today) {
     });
   }
   return out;
+}
+
+// ---------------------------------------------------------------- sorting and reports
+
+/** Booking number as people know it: R2025-006 for the old sheet, B261103-K7F for the app. */
+export function bookingNo(b) { return /^BR\d{4}-/.test(b.id) ? b.id.slice(1) : b.id; }
+
+/** Order of entry: old sheet numbers by year and number, then app bookings by date in their id. */
+export function numberKey(b) {
+  const old = String(b.id).match(/^BR(\d{4})-(\d+)/);
+  if (old) return '1|' + old[1] + '|' + old[2].padStart(6, '0');
+  return (/^B\d{6}-/.test(b.id) ? '2|' : '1|') + b.id;
+}
+
+/** by: 'checkin' | 'booked' | 'number'; dir: 'asc' | 'desc'. Bookings without a booking date come first. */
+export function sortBookings(list, by = 'checkin', dir = 'asc') {
+  const key = by === 'number' ? b => numberKey(b)
+    : by === 'booked' ? b => (b.bookingDate || '0000') + '|' + numberKey(b)
+    : b => b.checkIn + '|' + String(b.guestName || '').toLowerCase();
+  const out = list.map(b => [key(b), b]).sort((x, y) => x[0] < y[0] ? -1 : x[0] > y[0] ? 1 : 0).map(x => x[1]);
+  return dir === 'desc' ? out.reverse() : out;
+}
+
+/**
+ * Guests of a booking. The old sheet often put the group total on every room line (14 rooms x 21 guests
+ * = 21 people): the same number above 4 on all rooms counts once, otherwise the rooms add up.
+ */
+export function bookingGuests(lines) {
+  const g = lines.map(l => Number(l.guests) || 0);
+  if (g.length > 1 && g[0] > 4 && g.every(x => x === g[0])) return g[0];
+  return g.reduce((s, x) => s + x, 0);
+}
+
+/**
+ * Figures per month of one year, only rooms with status Confirmed. Bookings, rooms, guests and the
+ * Booking.com amount count in the month of check-in; nights, occupancy and revenue per night, so a stay
+ * over the month end is split fairly. roomCount = rooms in use, for the occupancy.
+ */
+export function monthReport(bookings, roomCount, year) {
+  const y = String(year);
+  const rows = MONTH_NAMES.map((name, m) => ({
+    month: name, days: new Date(Date.UTC(+y, m + 1, 0)).getUTCDate(),
+    bookings: 0, rooms: 0, guests: 0, nights: 0, revenue: 0, eur: 0, occupancy: 0
+  }));
+  for (const b of bookings) {
+    const lines = lineList(b).filter(l => l.status === 'Confirmed' && l.roomId);
+    if (!lines.length || !isDate(b.checkIn) || !isDate(b.checkOut)) continue;
+    if (b.checkIn.slice(0, 4) === y) {
+      const r = rows[+b.checkIn.slice(5, 7) - 1];
+      r.bookings++; r.rooms += lines.length;
+      r.guests += bookingGuests(lines);
+      r.eur += Number(b.bookingComAmountEur) || 0;
+    }
+    const perNight = lines.reduce((s, l) => s + (Number(l.rateGmd) || 0), 0);
+    for (const d of stayDates(b.checkIn, b.checkOut)) {
+      if (d.slice(0, 4) !== y) continue;
+      const r = rows[+d.slice(5, 7) - 1];
+      r.nights += lines.length; r.revenue += perNight;
+    }
+  }
+  const total = { month: 'Total', days: rows.reduce((s, r) => s + r.days, 0), bookings: 0, rooms: 0, guests: 0, nights: 0, revenue: 0, eur: 0 };
+  for (const r of rows) {
+    r.occupancy = roomCount ? r.nights / (roomCount * r.days) : 0;
+    for (const k of ['bookings', 'rooms', 'guests', 'nights', 'revenue', 'eur']) total[k] += r[k];
+  }
+  total.occupancy = roomCount ? total.nights / (roomCount * total.days) : 0;
+  return { rows, total };
 }

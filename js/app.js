@@ -1,4 +1,4 @@
-// Island Hotel bookings: the app. Screens: Planning, Bookings, Changes, Admin, plus the
+// Island Hotel bookings: the app. Screens: Today, Planning, Bookings, Changes, Reports, Admin, plus the
 // booking sheet (detail, new, edit). Data: Firestore with offline cache; see ../../ontwerp.
 import * as L from './logic.js';
 import { saveBooking, explainError } from './ops.js';
@@ -25,6 +25,7 @@ const S = {
   user: null, claims: {}, tab: 'today', day: null, zoom: load('ih.zoom', null), today: L.todayIn(TIMEZONE),
   rooms: [], roomsById: new Map(), users: new Map(), bookings: new Map(), older: null,
   loaded: false, online: navigator.onLine, feed: null, filter: 'upcoming', q: '', backup: null,
+  sortBy: 'checkin', sortDir: null, repYear: null,
   pending: load('ih.pending', []), rejected: load('ih.rejected', []), unsubs: [], feedUnsub: null
 };
 function load(k, d) { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch { return d; } }
@@ -164,6 +165,7 @@ function draw() {
   const signedIn = S.user && S.claims.staff;
   $('#tabs').hidden = !signedIn;
   $('#tabs [data-tab="admin"]').hidden = !S.claims.admin;
+  $('#tabs [data-tab="reports"]').hidden = !S.claims.admin;
   document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('on', b.dataset.tab === S.tab));
   const conn = $('#conn');
   if (!S.user) conn.hidden = true;
@@ -173,7 +175,7 @@ function draw() {
     conn.className = 'conn' + (!S.online ? ' off' : waiting ? ' wait' : '');
     conn.textContent = !S.online ? 'Offline' + (waiting ? ' · ' + waiting + ' waiting' : '') : waiting ? waiting + ' sending…' : '● Online';
   }
-  $('#title').textContent = signedIn ? { today: 'Today', planning: 'Planning', bookings: 'Bookings', changes: 'Recent changes', admin: 'Admin' }[S.tab] : 'Island Hotel';
+  $('#title').textContent = signedIn ? { today: 'Today', planning: 'Planning', bookings: 'Bookings', changes: 'Recent changes', reports: 'Reports', admin: 'Admin' }[S.tab] : 'Island Hotel';
   drawBanners(signedIn);
   // An open booking follows live changes (someone else saves, or our own save comes back).
   if (SHEET?.kind === 'detail') {
@@ -188,7 +190,7 @@ function draw() {
   if (!S.user) main.innerHTML = loginHtml();
   else if (!S.claims.staff) main.innerHTML = waitingHtml();
   else if (!S.loaded) main.innerHTML = '<div class="center muted">Loading bookings…</div>';
-  else ({ today: drawToday, planning: drawPlanning, bookings: drawBookings, changes: drawChanges, admin: drawAdmin }[S.tab] || drawToday)(main);
+  else ({ today: drawToday, planning: drawPlanning, bookings: drawBookings, changes: drawChanges, reports: drawReports, admin: drawAdmin }[S.tab] || drawToday)(main);
 }
 
 function drawBanners(signedIn) {
@@ -434,11 +436,12 @@ function statusPill(b) {
   return pd === 'Yes' ? '<span class="pill p-paid">Paid</span>' : pd === 'Deposit' ? '<span class="pill p-due">Deposit</span>' : '<span class="pill p-due">Not paid</span>';
 }
 function bookingCard(b) {
+  const extra = S.sortBy === 'checkin' ? '' : `<div class="s muted">${esc(L.bookingNo(b))} · ${b.bookingDate ? 'booked ' + L.fmtDate(b.bookingDate) + ' ' + b.bookingDate.slice(0, 4) : 'no booking date'}</div>`;
   const lines = L.activeLines(b), all = L.lineList(b);
   const rooms = (lines.length || all.length) === 1 ? roomName((lines[0] || all[0]).roomId) : (lines.length || all.length) + ' rooms';
   const off = L.bookingStatus(b) === 'Cancelled';
   return `<button type="button" class="card${off ? ' off' : ''}" data-open="${esc(b.id)}"><div class="t"><span>${esc(b.guestName)}</span>${statusPill(b)}</div>
-    <div class="s">${L.fmtRange(b.checkIn, b.checkOut)} ${b.checkIn.slice(0, 4) !== S.today.slice(0, 4) ? b.checkIn.slice(0, 4) : ''} · ${esc(rooms)}${b.source !== 'Direct' ? ' · ' + esc(L.SOURCE_LABEL[b.source]) : ''}${off ? '' : ' · ' + L.fmtGmd(L.bookingTotal(b))}</div></button>`;
+    <div class="s">${L.fmtRange(b.checkIn, b.checkOut)} ${b.checkIn.slice(0, 4) !== S.today.slice(0, 4) ? b.checkIn.slice(0, 4) : ''} · ${esc(rooms)}${b.source !== 'Direct' ? ' · ' + esc(L.SOURCE_LABEL[b.source]) : ''}${off ? '' : ' · ' + L.fmtGmd(L.bookingTotal(b))}</div>${extra}</button>`;
 }
 
 function drawBookings(main) {
@@ -448,11 +451,15 @@ function drawBookings(main) {
   else if (S.filter === 'upcoming') list = list.filter(b => b.checkOut >= S.today && L.bookingStatus(b) !== 'Cancelled');
   else if (S.filter === 'unpaid') list = list.filter(b => L.bookingStatus(b) !== 'Cancelled' && L.bookingPaid(b) !== 'Yes');
   else if (S.filter === 'cancelled') list = list.filter(b => L.bookingStatus(b) === 'Cancelled');
-  list.sort((a, b) => S.filter === 'upcoming' && !q ? a.checkIn.localeCompare(b.checkIn) : b.checkIn.localeCompare(a.checkIn));
+  // Without a choice: upcoming soonest first, the rest newest first (as before 04-11-2026).
+  const dir = S.sortDir || (S.sortBy === 'checkin' && (S.filter !== 'upcoming' || q) ? 'desc' : 'asc');
+  list = L.sortBookings(list, S.sortBy, dir);
   const chip = (k, t) => `<button type="button" class="chip${S.filter === k && !q ? ' on' : ''}" data-filter="${k}">${t}</button>`;
+  const sortChip = (k, t) => `<button type="button" class="chip${S.sortBy === k ? ' on' : ''}" data-sort="${k}" data-dir="${dir}">${t}${S.sortBy === k ? (dir === 'asc' ? ' ↑' : ' ↓') : ''}</button>`;
   main.innerHTML = `
     <input class="search" id="q" type="search" placeholder="Search name, phone or number" value="${esc(S.q)}" aria-label="Search">
     <div class="chips" style="margin-bottom:10px">${chip('upcoming', 'Upcoming')}${chip('unpaid', 'Not paid')}${chip('cancelled', 'Cancelled')}${chip('all', 'All')}</div>
+    <div class="chips sort" style="margin-bottom:10px"><span class="muted">Sort</span>${sortChip('checkin', 'Check-in')}${sortChip('booked', 'Booked on')}${sortChip('number', 'Number')}</div>
     ${list.length ? list.slice(0, 300).map(bookingCard).join('') : '<div class="center muted">Nothing found.</div>'}
     ${S.older ? '' : `<div style="text-align:center"><button class="link" type="button" data-act="older">Search older bookings too</button></div>`}
     <button class="fab" type="button" data-act="new">+ New booking</button>`;
@@ -499,6 +506,48 @@ function drawChanges(main) {
       <div class="s">${esc(lines)}${late ? ' · offline, arrived ' + L.fmtTime(e.savedAt.toMillis()) : ''}</div></button>`;
   }
   main.innerHTML = h || '<div class="center muted">No changes yet.</div>';
+}
+
+// ---------------------------------------------------------------- reports
+
+function reportData() {
+  const all = [...allBookings().values()];
+  const years = [...new Set(all.map(b => b.checkIn.slice(0, 4)).filter(y => /^\d{4}$/.test(y)))].sort();
+  const year = S.repYear || (years.includes(S.today.slice(0, 4)) ? S.today.slice(0, 4) : years[years.length - 1] || S.today.slice(0, 4));
+  const roomCount = S.rooms.filter(r => r.active !== false).length;
+  return { years, year, roomCount, ...L.monthReport(all, roomCount, year) };
+}
+
+function drawReports(main) {
+  if (!S.claims.admin) { main.innerHTML = ''; return; }
+  if (!S.older) { loadOlder(true); main.innerHTML = '<div class="center muted">Loading all bookings…</div>'; return; }
+  const { years, year, roomCount, rows, total } = reportData();
+  const n = v => Math.round(v).toLocaleString('en-US');
+  const pct = v => Math.round(v * 100) + '%';
+  const tr = (r, tag = 'td') => `<tr><${tag} class="m">${esc(r.month === 'Total' ? 'Total' : r.month.slice(0, 3))}</${tag}><${tag}>${n(r.bookings)}</${tag}><${tag}>${n(r.rooms)}</${tag}><${tag}>${n(r.guests)}</${tag}><${tag}>${n(r.nights)}</${tag}><${tag}>${pct(r.occupancy)}</${tag}><${tag}>${n(r.revenue)}</${tag}></tr>`;
+  main.innerHTML = `<div class="rep">
+    <div class="chips" style="margin-bottom:10px">${years.map(y => `<button type="button" class="chip${y === year ? ' on' : ''}" data-year="${y}">${y}</button>`).join('')}</div>
+    <div class="card rep-w"><table class="rep-t">
+      <thead><tr><th class="m"></th><th>Book.</th><th>Rooms</th><th>Guests</th><th>Nights</th><th>Occ.</th><th>GMD</th></tr></thead>
+      <tbody>${rows.map(r => tr(r)).join('')}</tbody>
+      <tfoot>${tr(total, 'th')}</tfoot></table></div>
+    <div class="s muted" style="margin:8px 2px">Booking.com ${year}: EUR ${n(total.eur)} (not in GMD).<br>
+      Only confirmed rooms count. Bookings, rooms and guests count in the month of check-in; nights, occupancy and GMD per night.
+      Occupancy = nights / (${roomCount} rooms in use x days).</div>
+    <button class="btn outline" type="button" data-act="repxlsx">Download Excel (${year})</button>
+  </div>`;
+}
+
+async function downloadReport() {
+  const XLSX = await import(XLSX_URL);
+  const { year, rows, total } = reportData();
+  const out = [...rows, total].map(r => ({
+    Month: r.month, Bookings: r.bookings, Rooms: r.rooms, Guests: r.guests, Nights: r.nights,
+    'Occupancy %': Math.round(r.occupancy * 1000) / 10, 'Revenue GMD': r.revenue, 'Booking.com EUR': r.eur
+  }));
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(out), 'Report ' + year);
+  XLSX.writeFile(wb, 'Island Hotel report ' + year + '.xlsx');
 }
 
 // ---------------------------------------------------------------- admin
@@ -622,7 +671,7 @@ async function importSheet(file) {
   let order = 0;
   for (const n of names) {
     const id = L.roomIdOf(n);
-    if (seen.has(id) || S.roomsById.has(id)) continue;
+    if (seen.has(id) || S.roomsById.has(id) || L.GROUP_NAMES.has(id)) continue;
     seen.add(id);
     const bld = n.match(/^(FULADU|JOKADU|BADIBU)/i);
     await F.setDoc(F.doc(db, 'rooms', id), {
@@ -865,7 +914,14 @@ document.addEventListener('click', e => {
   if (t.dataset.new) { const [room, date] = t.dataset.new.split('|'); return openForm(null, { room, date }); }
   if (t.dataset.open) return openBooking(t.dataset.open);
   if (t.dataset.zoom) return setZoom(t.dataset.zoom);
-  if (t.dataset.filter) { S.filter = t.dataset.filter; S.q = ''; return draw(); }
+  if (t.dataset.filter) { S.filter = t.dataset.filter; S.q = ''; S.sortDir = null; return draw(); }
+  if (t.dataset.sort) {
+    // the chosen sort again turns the order around
+    if (S.sortBy === t.dataset.sort) S.sortDir = t.dataset.dir === 'asc' ? 'desc' : 'asc';
+    else { S.sortBy = t.dataset.sort; S.sortDir = 'asc'; }
+    return draw();
+  }
+  if (t.dataset.year) { S.repYear = t.dataset.year; return draw(); }
   if (t.dataset.fix !== undefined) {
     const r = S.rejected[+t.dataset.fix];
     S.rejected.splice(+t.dataset.fix, 1); keep(); draw();
@@ -927,7 +983,8 @@ document.addEventListener('click', e => {
     undo: () => quickSave(b => { for (const l of Object.values(b.lines)) if (l.prevStatus || !String(l.notes || '').startsWith('DOUBLE')) { l.status = l.prevStatus || 'Confirmed'; delete l.prevStatus; } }, 'Booking restored'),
     adduser: addUser,
     addroom: addRoom,
-    excel: () => downloadExcel().catch(err => toast('Excel failed: ' + err.message))
+    excel: () => downloadExcel().catch(err => toast('Excel failed: ' + err.message)),
+    repxlsx: () => downloadReport().catch(err => toast('Excel failed: ' + err.message))
   }[act] || (() => {}))();
 });
 
