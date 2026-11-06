@@ -448,13 +448,12 @@ export function forward(bookings, rooms, f, today, days) {
   return { days, confirmed, other, confPct: cap ? confirmed / cap : 0, otherPct: cap ? other / cap : 0 };
 }
 
-// Booking.com check (ontwerp 04, 06-11-2026): which nights Booking.com sells more rooms than are free.
+// Booked per day (ontwerp 04, 06-11-2026): standard and Deluxe rooms booked per night, against the Booking.com offer.
 export const BCOM_KINDS = { Fuladu: 'standard', Jokadu: 'standard', Badibu: 'standard', Deluxe: 'deluxe' };
 
 /**
- * Per night from today: rooms, booked and free per kind, and what Booking.com still sells (offer minus its own
- * bookings that night). tight = free < still selling; then Booking.com should sell at most `free`.
- * offer = { standard, deluxe }; withOptions false = only Confirmed counts as booked.
+ * Per night from today: rooms, booked and free per kind. full = nothing free; tight = some free, but fewer
+ * than offered on Booking.com. offer = { standard, deluxe }; withOptions false = only Confirmed counts as booked.
  */
 export function bookingComCheck(bookings, rooms, today, days, offer, withOptions = true) {
   const statuses = withOptions ? ACTIVE : ['Confirmed'];
@@ -462,23 +461,22 @@ export function bookingComCheck(bookings, rooms, today, days, offer, withOptions
   const count = { standard: 0, deluxe: 0 };
   for (const k of kindOf.values()) count[k]++;
   const end = addDays(today, days);
-  const per = new Map(stayDates(today, end).map(d => [d, { standard: [0, 0], deluxe: [0, 0] }])); // [booked, via Booking.com]
+  const per = new Map(stayDates(today, end).map(d => [d, { standard: 0, deluxe: 0 }]));
   for (const b of bookings) {
     if (!isDate(b.checkIn) || !isDate(b.checkOut) || b.checkOut <= today || b.checkIn >= end) continue;
     const lines = lineList(b).filter(l => kindOf.has(l.roomId) && statuses.includes(l.status));
     if (!lines.length) continue;
     for (const d of stayDates(b.checkIn < today ? today : b.checkIn, b.checkOut < end ? b.checkOut : end)) {
-      for (const l of lines) {
-        const c = per.get(d)[kindOf.get(l.roomId)];
-        c[0]++; if (b.source === 'BookingCom') c[1]++;
-      }
+      const c = per.get(d);
+      for (const l of lines) c[kindOf.get(l.roomId)]++;
     }
   }
   return [...per].map(([date, c]) => {
-    const row = { date, tight: false };
+    const row = { date, full: false, tight: false };
     for (const k of ['standard', 'deluxe']) {
-      const free = Math.max(0, count[k] - c[k][0]), selling = Math.max(0, (Number(offer[k]) || 0) - c[k][1]);
-      row[k] = { rooms: count[k], booked: c[k][0], free, selling, tight: count[k] > 0 && free < selling };
+      const free = Math.max(0, count[k] - c[k]), full = count[k] > 0 && free === 0;
+      row[k] = { rooms: count[k], booked: c[k], free, full, tight: count[k] > 0 && !full && free < (Number(offer[k]) || 0) };
+      row.full = row.full || full;
       row.tight = row.tight || row[k].tight;
     }
     return row;

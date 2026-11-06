@@ -228,5 +228,8 @@ table.plan { border-collapse: separate; border-spacing: 0; table-layout: fixed; 
 .bc-step span { min-width: 86px; font-weight: 600; }
 .bc-step b { min-width: 22px; text-align: center; font-size: 18px; }
 .bc-step .chip { min-width: 46px; font-size: 20px; }
-.bc-row.tight { border-left: 4px solid var(--red); }
-.bc-row .bad { color: var(--red); font-weight: 700; }
+.bc-t td, .bc-t th { text-align: center; }
+.bc-t td:first-child, .bc-t th:first-child { text-align: left; white-space: nowrap; }
+.bc-t td.tight, .bc-key.tight { background: var(--opt-bg); color: var(--opt-tx); }
+.bc-t td.full, .bc-key.full { background: var(--red-l); color: var(--red); font-weight: 700; }
+.bc-key { padding: 0 6px; border-radius: 4px; }
