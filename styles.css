@@ -223,3 +223,10 @@ table.plan { border-collapse: separate; border-spacing: 0; table-layout: fixed; 
 .seg-bar i { display: block; background: var(--teal); border-radius: 999px; }
 .seg-bar i.o { background: var(--opt-bd); }
 .fw .t small { font-weight: 500; }
+.bc-set { display: flex; flex-wrap: wrap; gap: 8px 20px; }
+.bc-step { display: flex; align-items: center; gap: 8px; }
+.bc-step span { min-width: 86px; font-weight: 600; }
+.bc-step b { min-width: 22px; text-align: center; font-size: 18px; }
+.bc-step .chip { min-width: 46px; font-size: 20px; }
+.bc-row.tight { border-left: 4px solid var(--red); }
+.bc-row .bad { color: var(--red); font-weight: 700; }

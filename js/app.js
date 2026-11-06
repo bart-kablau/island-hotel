@@ -27,9 +27,11 @@ const S = {
   loaded: false, online: navigator.onLine, feed: null, filter: 'upcoming', q: '', backup: null,
   sortBy: 'checkin', sortDir: null,
   rep: { year: null, rooms: '', source: '', withOptions: false, metric: 'nights', month: null, open: '' },
+  bcom: { standard: 2, deluxe: 2, withOptions: true, ...load('ih.bcom', {}) },
   pending: load('ih.pending', []), rejected: load('ih.rejected', []), unsubs: [], feedUnsub: null
 };
 function load(k, d) { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch { return d; } }
+function keepBcom() { try { localStorage.setItem('ih.bcom', JSON.stringify(S.bcom)); } catch { /* private mode */ } }
 function keep() {
   try { localStorage.setItem('ih.pending', JSON.stringify(S.pending)); localStorage.setItem('ih.rejected', JSON.stringify(S.rejected)); } catch { /* private mode */ }
 }
@@ -599,6 +601,21 @@ function drawReports(main) {
     <div class="seg-bar" role="img" aria-label="${fmtPct(x.confPct)} confirmed, ${fmtPct(x.otherPct)} options and requests"><i style="width:${Math.min(100, x.confPct * 100)}%"></i><i class="o" style="width:${Math.min(100, x.otherPct * 100)}%"></i></div>
     <div class="s">${fmtN(x.confirmed)} confirmed room nights${x.other ? ', ' + fmtN(x.other) + ' option or request' : ''}</div></div>`).join('');
 
+  // Booking.com check: the filters above do not count here
+  const bc = S.bcom, check = L.bookingComCheck(all, S.rooms, S.today, 90, bc, bc.withOptions), tight = check.filter(d => d.tight);
+  const KIND = { standard: 'Standard', deluxe: 'Deluxe' };
+  const step = k => `<div class="bc-step"><span>${KIND[k]}</span><button type="button" class="chip" data-act="bcstep" data-bc="${k}" data-d="-1" aria-label="One ${KIND[k]} room less on Booking.com">−</button>
+    <b aria-label="${KIND[k]} rooms on Booking.com">${bc[k]}</b><button type="button" class="chip" data-act="bcstep" data-bc="${k}" data-d="1" aria-label="One ${KIND[k]} room more on Booking.com">+</button></div>`;
+  const kindLine = (d, k) => { const x = d[k]; return `<span${x.tight ? ' class="bad"' : ''}>${KIND[k]}: ${x.free} of ${x.rooms} free${x.tight ? ' · Booking.com max ' + x.free : ''}</span>`; };
+  const bcRow = d => `<div class="card bc-row${d.tight ? ' tight' : ''}"><b>${esc(L.fmtDate(d.date, true))}</b><div class="s">${['standard', 'deluxe'].filter(k => d[k].rooms).map(k => kindLine(d, k)).join('<br>')}</div></div>`;
+  const bcom = `<div class="card"><div class="s" style="margin-bottom:8px">Rooms you offer on Booking.com per day:</div>
+      <div class="bc-set">${step('standard')}${step('deluxe')}</div>
+      <button type="button" class="chip${bc.withOptions ? ' on' : ''}" style="margin-top:8px" data-act="bcopt" aria-pressed="${bc.withOptions}">${bc.withOptions ? '✓ ' : ''}Options count as booked</button>
+      <div style="margin-top:10px"><b>${tight.length ? `${tight.length} day${tight.length > 1 ? 's' : ''} to lower on Booking.com` : 'Next 90 days: all fine'}</b>
+      <div class="s">${tight.length ? 'Booking.com sells more rooms than are free. Set it to the max shown.' : 'Booking.com never sells more rooms than are free.'} Rooms booked through Booking.com are already taken off.</div></div></div>
+    ${(R.open === 'bcall' ? check : tight).map(bcRow).join('')}
+    <button class="link" type="button" data-act="bcall">${R.open === 'bcall' ? 'Only the days to lower' : 'Show all 90 days'}</button>`;
+
   // not paid yet
   const out = L.outstanding(all, S.rooms, f, S.today);
   const outRow = i => `<button type="button" class="card" data-open="${esc(i.b.id)}"><div class="t"><span>${esc(i.b.guestName)}</span><span class="money">GMD ${fmtN(i.amount)}</span></div>
@@ -608,6 +625,7 @@ function drawReports(main) {
   main.innerHTML = `<div class="rep">${filters}${zero}${tiles}${chart}
     <div class="bh"><h3>Per month</h3></div>${table}
     <div class="bh"><h3>Coming up</h3><span class="muted" style="font-weight:400;font-size:13px">from today, any year</span></div>${coming}
+    <div class="bh"><h3>Booking.com check</h3><span class="muted" style="font-weight:400;font-size:13px">from today, filters do not count</span></div>${bcom}
     <div class="bh"><h3>Not paid yet</h3><span class="muted" style="font-weight:400;font-size:13px">stay is over</span></div>
     <div class="card"><b>${fmtN(out.rooms)} rooms · GMD ${fmtN(out.amount)}</b><div class="s">Oldest first. Paid already? Open the booking and mark it paid.</div></div>
     ${outList}${out.items.length > 5 ? `<button class="link" type="button" data-act="repout">${R.open === 'out' ? 'Show less' : 'Show all ' + out.items.length}</button>` : ''}
@@ -1069,7 +1087,10 @@ document.addEventListener('click', e => {
     repopt: () => { S.rep.withOptions = !S.rep.withOptions; draw(); },
     repzero: () => { S.rep.open = S.rep.open === 'zero' ? '' : 'zero'; draw(); },
     repout: () => { S.rep.open = S.rep.open === 'out' ? '' : 'out'; draw(); },
-    repclose: () => { S.rep.month = null; draw(); }
+    repclose: () => { S.rep.month = null; draw(); },
+    bcstep: () => { const k = t.dataset.bc; S.bcom[k] = Math.min(10, Math.max(0, S.bcom[k] + Number(t.dataset.d))); keepBcom(); draw(); },
+    bcopt: () => { S.bcom.withOptions = !S.bcom.withOptions; keepBcom(); draw(); },
+    bcall: () => { S.rep.open = S.rep.open === 'bcall' ? '' : 'bcall'; draw(); }
   }[act] || (() => {}))();
 });
 
